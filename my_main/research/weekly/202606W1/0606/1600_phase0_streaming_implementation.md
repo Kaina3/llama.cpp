@@ -150,3 +150,12 @@ lc.llama_vocab_is_eog(vocab, new_tok)
   --mmproj ~/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf \
   --audio  my_main/sample/gemma4_audio_qa_input.wav
 ```
+
+### サーバでの実行コマンド
+
+```bash
+python3 /workspace/llama.cpp/my_main/scripts/phase0_streaming.py \
+    --model /workspace/llama.cpp/my_main/models/gemma4/gemma-4-12B-it-Q4_K_M.gguf \
+    --mmproj /workspace/llama.cpp/my_main/models/gemma4/mmproj-gemma-4-12B-it-Q8_0.gguf \
+    --audio /workspace/llama.cpp/my_main/sample/gemma4_audio_qa_input.wav
+```
