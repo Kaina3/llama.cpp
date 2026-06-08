@@ -1,0 +1,8 @@
+{
+  "n_samples": 3,
+  "total_hours": 0.006,
+  "avg_duration_s": 7.562,
+  "min_duration_s": 3.85,
+  "max_duration_s": 10.0,
+  "output_dir": "/workspace/llama.cpp/my_main/phase1_data/test"
+}
