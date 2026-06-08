@@ -30,7 +30,7 @@ J-CHAT (lhotse CutSet / HF Hub)
     ↓ ピーク正規化
     ↓ 0.5〜30秒でフィルタリング
     ↓ HuggingFace Dataset (.arrow) として保存
-/workspace/phase1_data/{split}/
+/workspace/llama.cpp/my_main/phase1_data/{split}/
 ```
 
 #### 出力 Dataset スキーマ
@@ -73,8 +73,8 @@ J-CHAT (lhotse CutSet / HF Hub)
 [test] Found 3 WAV files in /workspace/llama.cpp/my_main/sample
 
 [dataset] 3 samples  total=0.01h  avg=7.56s  min=3.85s  max=10.00s
-[dataset] Saved to /workspace/phase1_data/test
-[dataset] Manifest written: /workspace/phase1_data/test/manifest.json
+[dataset] Saved to /workspace/llama.cpp/my_main/phase1_data/test
+[dataset] Manifest written: /workspace/llama.cpp/my_main/phase1_data/test/manifest.json
 
 [verify] Dataset: 3 samples
   [0] id=gemma4_audio_qa_input  dur=10.00s  frames=250  text=''
@@ -115,7 +115,7 @@ huggingface-cli download sarulab-speech/J-CHAT \
 python3 /workspace/llama.cpp/my_main/scripts/phase1_data_pipeline.py \
     --jchat-json  /workspace/jchat_data/transcribed_jchat/podcast_train.json \
     --source      podcast \
-    --output-dir  /workspace/phase1_data/podcast_train \
+    --output-dir  /workspace/llama.cpp/my_main/phase1_data/podcast_train \
     --max-samples 5000 \
     --verify
 ```

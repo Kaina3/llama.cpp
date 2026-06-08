@@ -38,20 +38,20 @@ Usage:
   python3 phase1_data_pipeline.py \\
       --jchat-json  /path/to/transcribed_jchat/podcast_train.json \\
       --source      podcast \\
-      --output-dir  /workspace/phase1_data/podcast_train \\
+      --output-dir  /workspace/llama.cpp/my_main/phase1_data/podcast_train \\
       --max-samples 5000
 
   # J-CHAT を HuggingFace Hub から直接ストリーミング (要認証)
   python3 phase1_data_pipeline.py \\
       --hf-streaming podcast_train \\
-      --output-dir   /workspace/phase1_data/podcast_train \\
+      --output-dir   /workspace/llama.cpp/my_main/phase1_data/podcast_train \\
       --max-samples  5000
 
   # テストモード: 既存サンプル WAV でパイプラインを検証
   python3 phase1_data_pipeline.py \\
       --test-mode \\
       --wav-dir   /workspace/llama.cpp/my_main/sample \\
-      --output-dir /workspace/phase1_data/test
+      --output-dir /workspace/llama.cpp/my_main/phase1_data/test
 """
 
 from __future__ import annotations
