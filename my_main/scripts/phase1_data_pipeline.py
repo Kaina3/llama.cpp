@@ -179,42 +179,36 @@ def _iter_jchat_shar(json_path: str, source: str) -> Iterator[dict]:
 
 def _iter_jchat_hf_streaming(split: str) -> Iterator[dict]:
     """
-    HuggingFace Hub から J-CHAT を直接ストリーミングロード（認証が必要）。
-    lhotse の代わりに HF datasets を使用するフォールバック実装。
-    ※ J-CHAT は通常 shar 形式のため、実際には shar 経由を推奨。
+    HuggingFace Hub から J-CHAT マニフェスト JSON をダウンロードし、
+    lhotse shar 経由でストリーミングロード（認証が必要）。
+
+    J-CHAT は lhotse shar 形式のため、HF datasets の load_dataset は使えない。
+    hf_hub_download でマニフェストだけ取得し、_iter_jchat_shar に委譲する。
+
+    split 引数はマニフェストファイル名の一部:
+      podcast_train / podcast_valid / podcast_test /
+      youtube_train / youtube_valid / youtube_test
     """
     try:
-        from datasets import load_dataset
+        from huggingface_hub import hf_hub_download
     except ImportError:
-        sys.exit("ERROR: datasets not found. Install: pip install datasets")
+        sys.exit("ERROR: huggingface_hub not found. Install: pip install huggingface_hub")
 
-    print(f"[jchat] HF streaming: sarulab-speech/J-CHAT / {split}")
-    ds = load_dataset("sarulab-speech/J-CHAT", split=split,
-                      streaming=True, trust_remote_code=True)
-    for sample in ds:
-        audio_info = sample.get("audio") or {}
-        raw   = np.array(audio_info.get("array", []), dtype=np.float32)
-        sr    = audio_info.get("sampling_rate", SAMPLE_RATE)
-        text  = sample.get("transcription") or sample.get("text") or ""
-        if not text.strip() or len(raw) == 0:
-            continue
+    # split に source prefix がなければ podcast を補完
+    if "_" not in split:
+        manifest_name = f"podcast_{split}"
+    else:
+        manifest_name = split
 
-        audio = resample_to_16k(raw, sr)
-        audio = normalize_audio(audio)
-        dur   = len(audio) / SAMPLE_RATE
-        if dur < MIN_DURATION or dur > MAX_DURATION:
-            continue
-
-        yield {
-            "id":          sample.get("id", ""),
-            "audio_array": audio.tolist(),
-            "n_samples":   len(audio),
-            "n_frames":    math.ceil(len(audio) / CHUNK_SAMPLES),
-            "duration_s":  dur,
-            "text":        text.strip(),
-            "speaker":     sample.get("speaker", ""),
-            "source":      split,
-        }
+    hf_path = f"transcribed_jchat/{manifest_name}.json"
+    print(f"[jchat] Downloading manifest from HF Hub: sarulab-speech/J-CHAT / {hf_path}")
+    local_path = hf_hub_download(
+        "sarulab-speech/J-CHAT",
+        hf_path,
+        repo_type="dataset",
+    )
+    source = manifest_name.split("_")[0]  # "podcast" or "youtube"
+    yield from _iter_jchat_shar(local_path, source)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,8 +432,8 @@ def main() -> None:
         help="J-CHAT transcribed shar manifest JSON (例: transcribed_jchat/podcast_train.json)",
     )
     src.add_argument(
-        "--hf-streaming", metavar="SPLIT",
-        help="HuggingFace Hub から直接ストリーミング (例: podcast_train). 認証が必要.",
+        "--hf-streaming", metavar="SPLIT", nargs='?', const="train", default=None,
+        help="HuggingFace Hub から直接ストリーミング (デフォルト: train). 利用可能: train/validation/test. 認証が必要.",
     )
     src.add_argument(
         "--test-mode", action="store_true",

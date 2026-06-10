@@ -1,0 +1,79 @@
+# Gemma 4 UA Phase 1B - LoRA fine-tuning environment
+#
+# Base: CUDA 12.4 devel (PyTorch 2.5+ requires CUDA >= 12.1)
+# Installs: PyTorch (CUDA), transformers, peft, trl, bitsandbytes, datasets
+#
+# Build:
+#   docker build -t gemma4-ua-phase1b -f my_main/docker/Dockerfile.phase1b my_main/docker/
+#
+# Run (basic):
+#   docker run --gpus '"device=0"' --rm -it \
+#     -v $(pwd):/workspace/llama.cpp \
+#     -e HF_TOKEN=$HF_TOKEN \
+#     -e HF_HOME=/workspace/.cache \
+#     gemma4-ua-phase1b \
+#       --model  google/gemma-4-12b-it \
+#       --data   /workspace/llama.cpp/my_main/phase1_data/podcast_train \
+#       --output /workspace/llama.cpp/my_main/phase1_lora \
+#       --gpu    0 \
+#       --samples 500
+#
+# Run (inspect only - no training):
+#   docker run --gpus '"device=0"' --rm -it \
+#     -v $(pwd):/workspace/llama.cpp \
+#     -e HF_TOKEN=$HF_TOKEN \
+#     gemma4-ua-phase1b \
+#       --model google/gemma-4-12b-it \
+#       --inspect \
+#       --gpu 0
+#
+# Multi-GPU example:
+#   docker run --gpus '"device=0,1"' --rm -it \
+#     -v $(pwd):/workspace/llama.cpp \
+#     -e HF_TOKEN=$HF_TOKEN \
+#     gemma4-ua-phase1b \
+#       --model  google/gemma-4-12b-it \
+#       --data   /workspace/llama.cpp/my_main/phase1_data/podcast_train \
+#       --output /workspace/llama.cpp/my_main/phase1_lora \
+#       --gpu    0,1 \
+#       --epochs 3
+
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-dev \
+        python3-pip \
+        build-essential \
+        git \
+        wget \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python  python  /usr/bin/python3.11 1
+
+# Upgrade pip
+RUN python3 -m pip install --upgrade pip
+
+WORKDIR /workspace
+
+# Install PyTorch with CUDA 12.4 support
+RUN pip install --no-cache-dir \
+    torch==2.5.1 \
+    torchvision \
+    torchaudio \
+    --index-url https://download.pytorch.org/whl/cu124
+
+# Install training stack
+COPY requirements_phase1b.txt /tmp/requirements_phase1b.txt
+RUN pip install --no-cache-dir -r /tmp/requirements_phase1b.txt
+
+# Verify CUDA is accessible
+RUN python3 -c "import torch; print('CUDA available:', torch.cuda.is_available())"
+
+# The script and data are provided at runtime via volume mounts.
+ENTRYPOINT ["python3", "/workspace/llama.cpp/my_main/scripts/phase1_lora_finetune.py"]
