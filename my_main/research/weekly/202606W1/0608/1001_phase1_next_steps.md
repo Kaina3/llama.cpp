@@ -154,12 +154,16 @@ J-Moshi の 344h ステレオデータに相当する対話コーパスで学習
 ```
 Week 1 (0608〜0615)
   [✅] Phase 1A: データパイプライン (phase1_data_pipeline.py)
-  [  ] Phase 1A: J-CHAT 本番実行 (HF 認証 + 5000 サンプル生成)
+  [✅] Phase 1A: J-CHAT 本番実行 (HF 認証 + 5000 サンプル生成)
+  [✅] Phase 1B: Gemma4 モデル構造検証 (HF config + transformers ソース確認)
+  [✅] Phase 1B: LoRA ファインチューニングスクリプト
+       (phase1_lora_finetune.py + Dockerfile.phase1b)
 
 Week 2 (0615〜0622)
-  [  ] Phase 1B: LoRA ファインチューニングスクリプト
-       (phase1_lora_finetune.py)
   [  ] Phase 1B: 小規模実験 (500 サンプルで過学習確認)
+       docker build -t gemma4-ua-phase1b -f my_main/docker/Dockerfile.phase1b my_main/docker/
+       docker run ... --inspect --gpu 0   # 構造確認
+       docker run ... --samples 500 --epochs 3  # overfit 確認
 
 Week 3〜4
   [  ] Phase 1B: 5000+ サンプルでの本番学習

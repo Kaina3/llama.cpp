@@ -160,3 +160,8 @@ a.out.*
 
 AGENTS.local.md
 .pi/SYSTEM.md
+
+# Phase 1 data and model outputs (large files, not tracked)
+my_main/phase1_data/
+my_main/phase1_lora/
+my_main/phase1_lora_test/
