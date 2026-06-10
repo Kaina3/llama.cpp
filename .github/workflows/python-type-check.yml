@@ -7,6 +7,7 @@ on:
       - 'ty.toml'
       - '**.py'
       - '**/requirements*.txt'
+      - '!my_main/**'
       # - 'pyrightconfig.json'
   pull_request:
     paths:
@@ -14,6 +15,7 @@ on:
       - 'ty.toml'
       - '**.py'
       - '**/requirements*.txt'
+      - '!my_main/**'
       # - 'pyrightconfig.json'
 
 concurrency:
