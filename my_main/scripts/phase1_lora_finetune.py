@@ -67,6 +67,12 @@ from typing import Any
 import numpy as np
 import torch
 
+# torch.float8_e8m0fnu was added in PyTorch 2.7; transformers 5.x uses it at
+# import time for FP8 quantization even when we are not using FP8 training.
+# Provide a fallback so the import chain succeeds on older torch builds.
+if not hasattr(torch, "float8_e8m0fnu"):
+    torch.float8_e8m0fnu = torch.float8_e4m3fn  # type: ignore[attr-defined]
+
 
 # ---------------------------------------------------------------------------
 # Constants

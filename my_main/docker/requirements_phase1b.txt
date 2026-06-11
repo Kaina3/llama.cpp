@@ -2,7 +2,10 @@
 # PyTorch is installed separately in Dockerfile (with CUDA wheels)
 
 # Hugging Face ecosystem
-transformers>=4.50.0           # Gemma4UnifiedForConditionalGeneration support
+# transformers 5.0+ is required for Gemma4 (gemma4_unified model type).
+# transformers 5.x uses torch.float8_e8m0fnu at import time; the training
+# script monkey-patches torch to provide a fallback on PyTorch < 2.7.
+transformers>=5.0.0            # Gemma4UnifiedForConditionalGeneration support
 tokenizers>=0.21.0
 accelerate>=1.0.0
 datasets>=3.0.0
