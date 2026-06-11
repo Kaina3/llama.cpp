@@ -18,6 +18,7 @@ librosa
 soundfile
 scipy>=1.10.0
 
-# Numerics / dev
+# Numerics / dev / image support
 numpy>=1.24.0
+pillow>=10.0.0       # required by Gemma4UnifiedProcessor
 ipython

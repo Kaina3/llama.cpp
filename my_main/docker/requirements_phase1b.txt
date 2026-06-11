@@ -20,9 +20,12 @@ peft>=0.14.0                   # LoraConfig with layers_to_transform, modules_to
 # Quantization (4-bit QLoRA)
 bitsandbytes>=0.43.0           # NF4 quantization + AdamW8bit optimizer
 
-# Numerics
+# Numerics / image support
+# Pillow is required by Gemma4UnifiedProcessor even when using audio-only input
+# (Gemma4 is multimodal; its Processor class always imports PIL at load time)
 numpy>=1.24.0
 scipy>=1.10.0
+pillow>=10.0.0
 
 # Safetensors for fast model loading
 safetensors>=0.4.0
