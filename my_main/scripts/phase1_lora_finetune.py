@@ -308,9 +308,85 @@ def inspect_model(model, processor) -> None:
 # LoRA configuration
 # ---------------------------------------------------------------------------
 
+def dequantize_audio_projection(model) -> None:
+    """
+    Replace the 4-bit quantized embed_audio.embedding_projection with a
+    trainable bf16 nn.Linear in-place.
+
+    modules_to_save cannot be used with Params4bit tensors: PEFT tries to
+    clone/copy the module during get_peft_model(), which triggers
+    __torch_function__ on Params4bit and raises a RuntimeError.
+    Instead we dequantize this single small layer (640->3840, ~2.4M params)
+    back to bf16 so it can be trained normally alongside the LoRA weights.
+    """
+    from bitsandbytes.nn import Linear4bit
+
+    target = model.model.embed_audio.embedding_projection
+    if not isinstance(target, Linear4bit):
+        # Already in full precision (--no-4bit mode); just enable gradients.
+        for p in target.parameters():
+            p.requires_grad = True
+        print("[lora] embed_audio.embedding_projection: already fp, set requires_grad=True")
+        return
+
+    # Dequantize weight from NF4 -> bf16.
+    # Params4bit.dequantize() and .data.dequantize() both return the packed
+    # uint8 buffer in shape (numel/2, 1).  Use bnb.functional.dequantize_4bit
+    # with the stored quant_state to get the correct (out_features, in_features)
+    # float tensor.
+    import bitsandbytes.functional as bnbF
+    device = next(target.parameters()).device
+    qs = target.weight.quant_state
+    if qs is not None:
+        weight_bf16 = bnbF.dequantize_4bit(
+            target.weight.data, qs
+        ).to(torch.bfloat16)
+    else:
+        # Not yet quantized (e.g. first forward not yet called); use raw data
+        weight_bf16 = target.weight.data.reshape(
+            target.out_features, target.in_features
+        ).to(torch.bfloat16)
+
+    new_layer = torch.nn.Linear(
+        target.in_features, target.out_features,
+        bias=target.bias is not None,
+        dtype=torch.bfloat16,
+        device=device,
+    )
+    new_layer.weight = torch.nn.Parameter(weight_bf16)
+    if target.bias is not None:
+        new_layer.bias = torch.nn.Parameter(target.bias.data.to(torch.bfloat16))
+
+    model.model.embed_audio.embedding_projection = new_layer
+    n_params = sum(p.numel() for p in new_layer.parameters())
+    print(f"[lora] embed_audio.embedding_projection: dequantized to bf16 "
+          f"({n_params:,} params, device={device})")
+
+
 def apply_lora(model, args: argparse.Namespace):
-    """Apply PEFT LoRA to decoder layers and keep embed_audio unfrozen."""
-    from peft import LoraConfig, get_peft_model
+    """
+    Apply PEFT LoRA to the last N decoder layers.
+
+    embed_audio.embedding_projection is handled separately via
+    dequantize_audio_projection() rather than modules_to_save, because
+    modules_to_save fails when the layer is a bitsandbytes Params4bit tensor.
+    """
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+
+    # Prepare 4-bit model for training: freezes all params, casts LayerNorms
+    # and other float modules to fp32 so gradients flow correctly.
+    # Skip when using full-precision mode (--no-4bit).
+    if not args.no_4bit:
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=True,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
+        )
+        print("[lora] prepare_model_for_kbit_training done")
+
+    # Dequantize audio projection to bf16 so it can be trained fully.
+    # Must be done BEFORE get_peft_model so PEFT sees a regular nn.Linear.
+    dequantize_audio_projection(model)
 
     # Decoder layer indices to apply LoRA to (last N layers)
     start = N_DECODER_LAYERS - args.finetune_decoder_layers
@@ -327,13 +403,18 @@ def apply_lora(model, args: argparse.Namespace):
         lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "v_proj"],
         layers_to_transform=lora_layers,
-        # embed_audio.embedding_projection is kept trainable via modules_to_save
-        modules_to_save=["embed_audio.embedding_projection"],
         bias="none",
         task_type="CAUSAL_LM",
     )
 
     model = get_peft_model(model, lora_config)
+
+    # embed_audio.embedding_projection is now bf16; re-enable its gradients
+    # (prepare_model_for_kbit_training froze everything above).
+    for name, param in model.named_parameters():
+        if "embed_audio.embedding_projection" in name and "lora_" not in name:
+            param.requires_grad = True
+
     model.print_trainable_parameters()
     return model
 
@@ -665,11 +746,13 @@ def main() -> None:
     audio_token_id = getattr(model.config, "audio_token_id", AUDIO_TOKEN_ID)
     print(f"[model] audio_token_id = {audio_token_id}")
 
-    # Apply LoRA
+    # Apply LoRA (4-bit path: also calls prepare_model_for_kbit_training
+    # + gradient checkpointing; --no-4bit path: enable grad checkpointing here)
     model = apply_lora(model, args)
-
-    # Enable gradient checkpointing to reduce activation memory
-    model.gradient_checkpointing_enable()
+    if args.no_4bit:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
 
     # Dataset + collator
     dataset  = Phase1Dataset(raw_ds, max_tokens=args.max_audio_tokens,
