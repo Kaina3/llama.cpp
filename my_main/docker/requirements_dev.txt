@@ -1,0 +1,23 @@
+# Dev environment Python dependencies
+# PyTorch is installed separately in Dockerfile.dev (with CUDA wheels)
+
+# HuggingFace stack
+transformers>=4.50.0
+tokenizers>=0.21.0
+accelerate>=1.0.0
+datasets>=3.0.0
+huggingface_hub>=0.27.0
+
+# LoRA / PEFT / training
+peft>=0.14.0
+bitsandbytes>=0.43.0
+safetensors>=0.4.0
+
+# Audio
+librosa
+soundfile
+scipy>=1.10.0
+
+# Numerics / dev
+numpy>=1.24.0
+ipython
