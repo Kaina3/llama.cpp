@@ -311,55 +311,58 @@ def inspect_model(model, processor) -> None:
 def dequantize_audio_projection(model) -> None:
     """
     Replace the 4-bit quantized embed_audio.embedding_projection with a
-    trainable bf16 nn.Linear in-place.
+    trainable fp32 nn.Linear in-place.
+
+    Must be called BEFORE prepare_model_for_kbit_training so that prepare()
+    casts this layer to fp32 along with embed_tokens and LayerNorms.
+    This ensures dtype consistency at the masked_scatter_ op that injects
+    audio embeddings into the token sequence: both embed_tokens output and
+    audio embeddings will be fp32 after prepare().
 
     modules_to_save cannot be used with Params4bit tensors: PEFT tries to
-    clone/copy the module during get_peft_model(), which triggers
-    __torch_function__ on Params4bit and raises a RuntimeError.
-    Instead we dequantize this single small layer (640->3840, ~2.4M params)
-    back to bf16 so it can be trained normally alongside the LoRA weights.
+    clone the module during get_peft_model(), which triggers __torch_function__
+    on Params4bit and raises a RuntimeError.
     """
     from bitsandbytes.nn import Linear4bit
 
     target = model.model.embed_audio.embedding_projection
     if not isinstance(target, Linear4bit):
-        # Already in full precision (--no-4bit mode); just enable gradients.
-        for p in target.parameters():
-            p.requires_grad = True
-        print("[lora] embed_audio.embedding_projection: already fp, set requires_grad=True")
+        # Already fp (--no-4bit mode): nothing to do; requires_grad is set
+        # after get_peft_model() in apply_lora().
+        print("[lora] embed_audio.embedding_projection: not quantized, skip dequantize")
         return
 
-    # Dequantize weight from NF4 -> bf16.
-    # Params4bit.dequantize() and .data.dequantize() both return the packed
-    # uint8 buffer in shape (numel/2, 1).  Use bnb.functional.dequantize_4bit
-    # with the stored quant_state to get the correct (out_features, in_features)
+    # Dequantize weight from NF4 -> fp32.
+    # Params4bit.dequantize() / .data.dequantize() return the packed uint8
+    # buffer, not the float weights.  Use bnb.functional.dequantize_4bit with
+    # the stored quant_state to get the correct (out_features, in_features)
     # float tensor.
     import bitsandbytes.functional as bnbF
     device = next(target.parameters()).device
     qs = target.weight.quant_state
     if qs is not None:
-        weight_bf16 = bnbF.dequantize_4bit(
+        weight_fp32 = bnbF.dequantize_4bit(
             target.weight.data, qs
-        ).to(torch.bfloat16)
+        ).to(torch.float32)
     else:
-        # Not yet quantized (e.g. first forward not yet called); use raw data
-        weight_bf16 = target.weight.data.reshape(
+        # Not yet quantized (first forward not yet called); raw data is fp
+        weight_fp32 = target.weight.data.reshape(
             target.out_features, target.in_features
-        ).to(torch.bfloat16)
+        ).to(torch.float32)
 
     new_layer = torch.nn.Linear(
         target.in_features, target.out_features,
         bias=target.bias is not None,
-        dtype=torch.bfloat16,
+        dtype=torch.float32,
         device=device,
     )
-    new_layer.weight = torch.nn.Parameter(weight_bf16)
+    new_layer.weight = torch.nn.Parameter(weight_fp32)
     if target.bias is not None:
-        new_layer.bias = torch.nn.Parameter(target.bias.data.to(torch.bfloat16))
+        new_layer.bias = torch.nn.Parameter(target.bias.data.to(torch.float32))
 
     model.model.embed_audio.embedding_projection = new_layer
     n_params = sum(p.numel() for p in new_layer.parameters())
-    print(f"[lora] embed_audio.embedding_projection: dequantized to bf16 "
+    print(f"[lora] embed_audio.embedding_projection: dequantized NF4->fp32 "
           f"({n_params:,} params, device={device})")
 
 
@@ -370,12 +373,25 @@ def apply_lora(model, args: argparse.Namespace):
     embed_audio.embedding_projection is handled separately via
     dequantize_audio_projection() rather than modules_to_save, because
     modules_to_save fails when the layer is a bitsandbytes Params4bit tensor.
+
+    Operation order matters for dtype consistency:
+      1. dequantize_audio_projection  -- convert Linear4bit -> fp32 nn.Linear
+      2. prepare_model_for_kbit_training -- casts ALL non-4bit params to fp32,
+         including the audio projection; ensures embed_tokens and audio embeds
+         share the same dtype at the masked_scatter_ injection op
+      3. get_peft_model               -- adds LoRA adapters (bf16 compute)
+      4. re-enable requires_grad on audio projection
     """
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-    # Prepare 4-bit model for training: freezes all params, casts LayerNorms
-    # and other float modules to fp32 so gradients flow correctly.
-    # Skip when using full-precision mode (--no-4bit).
+    # Step 1: dequantize audio projection to fp32 FIRST so that step 2 sees
+    # a regular nn.Linear and casts it to fp32 alongside embed_tokens.
+    if not args.no_4bit:
+        dequantize_audio_projection(model)
+
+    # Step 2: prepare 4-bit model for training.
+    # Freezes all params and casts all float16/bfloat16 non-4bit params to
+    # fp32 (embed_tokens, LayerNorm, lm_head, and our audio projection).
     if not args.no_4bit:
         model = prepare_model_for_kbit_training(
             model,
@@ -383,10 +399,6 @@ def apply_lora(model, args: argparse.Namespace):
             gradient_checkpointing_kwargs={"use_reentrant": False},
         )
         print("[lora] prepare_model_for_kbit_training done")
-
-    # Dequantize audio projection to bf16 so it can be trained fully.
-    # Must be done BEFORE get_peft_model so PEFT sees a regular nn.Linear.
-    dequantize_audio_projection(model)
 
     # Decoder layer indices to apply LoRA to (last N layers)
     start = N_DECODER_LAYERS - args.finetune_decoder_layers
