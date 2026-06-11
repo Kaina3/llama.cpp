@@ -165,3 +165,5 @@ AGENTS.local.md
 my_main/phase1_data/
 my_main/phase1_lora/
 my_main/phase1_lora_test/
+my_main/phase1_lora_overfit/
+my_main/phase1_lora_overfit_test/

@@ -4,22 +4,28 @@ Phase 1B: LoRA fine-tuning for Gemma4 UA audio transcription (J-CHAT)
 
 Verified model structure (google/gemma-4-12b-it, Gemma4UnifiedForConditionalGeneration):
 
-  model.audio_tower              - Gemma4UnifiedAudioModel (num_layers=0 in unified)
-  model.embed_audio              - Gemma4MultimodalEmbedder
-    .embedding_pre_projection_norm  - RMSNorm (no learned scale, eps=1e-6)
+  NOTE: This is gemma4_UNIFIED (model_type=gemma4_unified), NOT gemma4.
+        Gemma4UnifiedModel has NO audio_tower. Audio is projected directly via embed_audio.
+
+  model.model                    - Gemma4UnifiedModel
+  model.model.embed_audio        - Gemma4UnifiedMultimodalEmbedder
+    .embedding_pre_projection_norm  - Gemma4UnifiedRMSNorm (no learned scale, eps=1e-6)
     .embedding_projection           - nn.Linear(640, 3840, bias=False)  <- TRAIN FULLY
-  model.language_model           - Gemma4TextModel (48 layers)
-    .layers[i].self_attn.q_proj  - nn.Linear (16 heads * 512 head_dim = 8192)
-    .layers[i].self_attn.v_proj  - nn.Linear (exists on sliding layers, None on full)
-  lm_head                        - tied to language_model.embed_tokens.weight
+  model.model.language_model     - Gemma4UnifiedTextModel (48 layers)
+    .layers[i].self_attn.q_proj  - nn.Linear
+    .layers[i].self_attn.v_proj  - nn.Linear (exists on sliding-window layers only)
+  model.lm_head                  - tied to language_model.embed_tokens.weight
 
   GGUF counterpart: mm.a.input_projection.weight  shape=(3840, 640)
 
-Audio pipeline (unified):
+Audio pipeline (Unified - NO subsampling):
   raw PCM (float32, 16kHz) -> split into 640-sample frames
-  -> audio_tower (subsample bypass + output_proj) -> (n_frames, 640)
-  -> embed_audio (RMSNorm + embedding_projection) -> (n_frames, 3840)
-  -> injected at audio_token_id positions in token sequence
+  -> embed_audio (RMSNorm + embedding_projection): (B, n_frames, 640) -> (B, n_frames, 3840)
+  -> 1 frame = 1 audio token (no Conv2d downsampling unlike gemma4 non-unified)
+  -> injected at audio_token_id positions in token sequence via masked_scatter
+
+  input_features shape: (B, max_n_frames, 640)  <- raw PCM frames
+  input_features_mask shape: (B, max_n_frames)   <- True for valid frames
 
 Training format:
   <bos><start_of_turn>user\n<audio_tok x N><end_of_turn>\n
@@ -118,9 +124,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--grad-accum", type=int, default=16,
                    help="Gradient accumulation steps (effective batch = batch*accum)")
     p.add_argument("--lr-audio", type=float, default=1e-5,
-                   help="Learning rate for embed_audio.embedding_projection")
+                   help="Learning rate for embed_audio.embedding_projection "
+                        "(production default; for overfit test use ~1e-3)")
     p.add_argument("--lr-lora", type=float, default=2e-6,
-                   help="Learning rate for decoder LoRA weights")
+                   help="Learning rate for decoder LoRA weights "
+                        "(production default; for overfit test use ~2e-4)")
+    p.add_argument("--lr-scale", type=float, default=1.0,
+                   help="Multiply both LRs by this factor. "
+                        "Use --lr-scale 100 for an overfit test (500 samples, ~3 epochs)")
     p.add_argument("--max-audio-tokens", type=int, default=MAX_AUDIO_TOKS,
                    help="Max audio tokens per sample (truncates long audio)")
     p.add_argument("--samples", type=int, default=None,
@@ -603,10 +614,13 @@ class AudioTextCollator:
 def build_optimizer(model, args: argparse.Namespace) -> torch.optim.Optimizer:
     """
     Two parameter groups:
-      - embed_audio.embedding_projection  : lr = args.lr_audio
-      - LoRA weights (lora_A, lora_B)     : lr = args.lr_lora
-    All other trainable params: lr = args.lr_lora (fallback)
+      - embed_audio.embedding_projection  : lr = args.lr_audio * args.lr_scale
+      - LoRA weights (lora_A, lora_B)     : lr = args.lr_lora * args.lr_scale
+    All other trainable params: lr = args.lr_lora * lr_scale (fallback)
     """
+    lr_audio = args.lr_audio * args.lr_scale
+    lr_lora  = args.lr_lora  * args.lr_scale
+
     audio_proj_params = []
     lora_params       = []
     other_params      = []
@@ -624,18 +638,20 @@ def build_optimizer(model, args: argparse.Namespace) -> torch.optim.Optimizer:
     n_audio = sum(p.numel() for p in audio_proj_params)
     n_lora  = sum(p.numel() for p in lora_params)
     n_other = sum(p.numel() for p in other_params)
-    print(f"\n[optimizer] audio_proj: {n_audio:,} params  lr={args.lr_audio}")
-    print(f"[optimizer] lora:       {n_lora:,} params  lr={args.lr_lora}")
+    print(f"\n[optimizer] audio_proj: {n_audio:,} params  lr={lr_audio:.2e}")
+    print(f"[optimizer] lora:       {n_lora:,} params  lr={lr_lora:.2e}")
+    if args.lr_scale != 1.0:
+        print(f"[optimizer] lr_scale={args.lr_scale}x applied")
     if n_other:
-        print(f"[optimizer] other:      {n_other:,} params  lr={args.lr_lora} (fallback)")
+        print(f"[optimizer] other:      {n_other:,} params  lr={lr_lora:.2e} (fallback)")
 
     param_groups = []
     if audio_proj_params:
-        param_groups.append({"params": audio_proj_params, "lr": args.lr_audio})
+        param_groups.append({"params": audio_proj_params, "lr": lr_audio})
     if lora_params:
-        param_groups.append({"params": lora_params, "lr": args.lr_lora})
+        param_groups.append({"params": lora_params, "lr": lr_lora})
     if other_params:
-        param_groups.append({"params": other_params, "lr": args.lr_lora})
+        param_groups.append({"params": other_params, "lr": lr_lora})
 
     # Use 8-bit Adam if bitsandbytes is available (saves ~75% optimizer memory)
     try:
@@ -684,6 +700,18 @@ def train_loop(model, dataloader, optimizer, scheduler,
             accum_steps += 1
 
             if accum_steps == args.grad_accum:
+                # Compute per-group gradient norms before clipping (for diagnostics)
+                gnorm_audio, gnorm_lora = 0.0, 0.0
+                for name, param in model.named_parameters():
+                    if param.requires_grad and param.grad is not None:
+                        g2 = param.grad.norm().item() ** 2
+                        if "embed_audio" in name and "embedding_projection" in name:
+                            gnorm_audio += g2
+                        elif "lora_" in name:
+                            gnorm_lora += g2
+                gnorm_audio = gnorm_audio ** 0.5
+                gnorm_lora  = gnorm_lora  ** 0.5
+
                 torch.nn.utils.clip_grad_norm_(
                     [p for p in model.parameters() if p.requires_grad], 1.0
                 )
@@ -696,9 +724,10 @@ def train_loop(model, dataloader, optimizer, scheduler,
 
                 if global_step % args.log_steps == 0:
                     avg_loss = running_loss / (args.log_steps * args.grad_accum)
-                    lr_lora  = optimizer.param_groups[-1]["lr"]
+                    cur_lr   = optimizer.param_groups[-1]["lr"]
                     print(f"  epoch={epoch+1} step={global_step}/{total_steps // args.grad_accum}"
-                          f"  loss={avg_loss:.4f}  lr={lr_lora:.2e}")
+                          f"  loss={avg_loss:.4f}  lr={cur_lr:.2e}"
+                          f"  gnorm_audio={gnorm_audio:.2e}  gnorm_lora={gnorm_lora:.2e}")
                     running_loss = 0.0
 
                 if global_step % args.save_steps == 0:
