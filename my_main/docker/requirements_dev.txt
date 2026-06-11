@@ -20,5 +20,7 @@ scipy>=1.10.0
 
 # Numerics / dev / image support
 numpy>=1.24.0
-pillow>=10.0.0       # required by Gemma4UnifiedProcessor
+pillow>=10.0.0       # required by Gemma4UnifiedProcessor (multimodal)
+# torchvision: install separately via matching CUDA wheel index
+#   pip install torchvision --index-url https://download.pytorch.org/whl/cu121
 ipython
