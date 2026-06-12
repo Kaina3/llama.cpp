@@ -167,3 +167,7 @@ my_main/phase1_lora/
 my_main/phase1_lora_test/
 my_main/phase1_lora_overfit/
 my_main/phase1_lora_overfit_test/
+
+# Duplex (time-aligned) data and model outputs
+my_main/duplex_data/
+my_main/duplex_lora*/
