@@ -88,6 +88,9 @@ def parse_args() -> argparse.Namespace:
                         "(Gemma 4 vocab に <unusedN> は無いため <mask>=4 を転用)")
     p.add_argument("--pad-loss-weight", type=float, default=1.0,
                    help="PAD スロットの loss 重み (text スロットは常に 1.0)")
+    p.add_argument("--pad-loss-warmup-steps", type=int, default=0,
+                   help="PAD loss weight を 0 → pad-loss-weight へ線形に上げるステップ数 "
+                        "(0=warmup なし). 例: 150 で最初の約半エポック分かけてランプアップ")
 
     # 評価・ログ
     p.add_argument("--val-samples", type=int, default=64)
@@ -432,13 +435,18 @@ def train(model, train_loader, val_loader, optimizer, scheduler, collator,
     run = {"loss": 0.0, "loss_pad": 0.0, "loss_text": 0.0,
            "acc_pad": 0.0, "acc_text": 0.0, "n": 0}
 
+    def _pad_weight(step: int) -> float:
+        if args.pad_loss_warmup_steps <= 0:
+            return args.pad_loss_weight
+        return args.pad_loss_weight * min(1.0, step / args.pad_loss_warmup_steps)
+
     for epoch in range(args.epochs):
         for batch in train_loader:
             batch = {k: v.to(device) for k, v in batch.items()}
             labels = batch.pop("labels")
             out = model(**batch)
-            m = compute_loss(out.logits, labels, collator.slot_pad_id,
-                             args.pad_loss_weight)
+            cur_pw = _pad_weight(global_step + 1)
+            m = compute_loss(out.logits, labels, collator.slot_pad_id, cur_pw)
             (m["loss"] / args.grad_accum).backward()
 
             run["loss"] += float(m["loss"]); run["n"] += 1
@@ -465,17 +473,18 @@ def train(model, train_loader, val_loader, optimizer, scheduler, collator,
             if global_step % args.log_steps == 0:
                 n = max(run["n"], 1)
                 lr = optimizer.param_groups[0]["lr"]
+                cur_pw = _pad_weight(global_step)
                 print(f"  ep={epoch+1} step={global_step}/{total_updates}"
                       f"  loss={run['loss']/n:.4f}"
                       f"  text={run['loss_text']/n:.4f} pad={run['loss_pad']/n:.4f}"
                       f"  acc_t={run['acc_text']/n:.3f}"
-                      f"  gnorm={gnorm:.2e} lr={lr:.2e}"
+                      f"  gnorm={gnorm:.2e} lr={lr:.2e} pw={cur_pw:.3f}"
                       f"  ovf={collator.overflow_tokens}")
                 metrics.log(split="train", epoch=epoch + 1, step=global_step,
                             loss=run["loss"]/n, loss_text=run["loss_text"]/n,
                             loss_pad=run["loss_pad"]/n,
                             acc_text=run["acc_text"]/n, acc_pad=run["acc_pad"]/n,
-                            gnorm=gnorm, lr=lr,
+                            gnorm=gnorm, lr=lr, pad_weight=cur_pw,
                             overflow_tokens=collator.overflow_tokens,
                             elapsed_s=time.monotonic() - t0)
                 run = {k: 0.0 for k in run}
