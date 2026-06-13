@@ -2,7 +2,10 @@
 # PyTorch is installed separately in Dockerfile (with CUDA wheels)
 
 # Hugging Face ecosystem
-transformers>=4.50.0           # Gemma4UnifiedForConditionalGeneration support
+# transformers 5.0+ is required for Gemma4 (gemma4_unified model type).
+# transformers 5.x uses torch.float8_e8m0fnu at import time; the training
+# script monkey-patches torch to provide a fallback on PyTorch < 2.7.
+transformers>=5.0.0            # Gemma4UnifiedForConditionalGeneration support
 tokenizers>=0.21.0
 accelerate>=1.0.0
 datasets>=3.0.0
@@ -17,9 +20,15 @@ peft>=0.14.0                   # LoraConfig with layers_to_transform, modules_to
 # Quantization (4-bit QLoRA)
 bitsandbytes>=0.43.0           # NF4 quantization + AdamW8bit optimizer
 
-# Numerics
+# Numerics / image / vision support
+# Gemma4UnifiedProcessor unconditionally imports PIL and torchvision.transforms.v2
+# (multimodal model; image path is always compiled even for audio-only training)
+# torchvision must be installed via the same CUDA wheel index as torch.
 numpy>=1.24.0
 scipy>=1.10.0
+pillow>=10.0.0
+# torchvision: install with matching CUDA wheel, e.g.:
+#   pip install torchvision --index-url https://download.pytorch.org/whl/cu126
 
 # Safetensors for fast model loading
 safetensors>=0.4.0

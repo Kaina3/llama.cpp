@@ -1,0 +1,66 @@
+# General-purpose development environment for vishnu/ (llama.cpp fork + ML research)
+#
+# Base: CUDA 12.2 devel (matches host driver 535.x)
+# Includes: Python 3.11, cmake, git, gh CLI, HuggingFace/PEFT/PyTorch stack
+#
+# Build:
+#   docker build -t gemma4-ua-dev -f my_main/docker/Dockerfile.dev my_main/docker/
+#
+# Run (interactive bash):
+#   ./my_main/docker/run_dev.sh
+#
+# Run with GPU selector:
+#   GPUS='"device=0"' ./my_main/docker/run_dev.sh
+#
+# Mounts (managed by run_dev.sh):
+#   /home/anderson/llama/vishnu/ → /workspace      (rw)
+#   /home/anderson/.ssh          → /root/.ssh       (ro)
+#   ~/.cache/huggingface         → /root/.cache/huggingface (rw)
+
+FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# --- System packages ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-dev \
+        python3-pip \
+        build-essential \
+        cmake \
+        ninja-build \
+        git \
+        curl \
+        wget \
+        vim \
+        less \
+        tree \
+        jq \
+        openssh-client \
+        ca-certificates \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+         | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+         > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python  python  /usr/bin/python3.11 1
+
+RUN python3 -m pip install --upgrade pip
+
+# --- PyTorch (cu121 — compatible with CUDA 12.2 host driver) ---
+RUN pip install --no-cache-dir \
+    torch \
+    torchaudio \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# --- ML/research stack ---
+COPY requirements_dev.txt /tmp/requirements_dev.txt
+RUN pip install --no-cache-dir -r /tmp/requirements_dev.txt
+
+WORKDIR /workspace
+
+CMD ["/bin/bash"]
